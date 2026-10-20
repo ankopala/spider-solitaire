@@ -1,0 +1,23 @@
+# ---- macOS 文件系统元数据 ----
+# Finder 每访问一个目录就生成一份，跟项目内容无关，还会反复变动刷出无意义 diff
+.DS_Store
+._*
+
+# ---- 构建产物 ----
+# 由源码打包生成（见 .workbuddy/docs/PACKAGING.md），随时可重建；
+# 对外发布请挂 GitHub Releases，不要把 436K 的二进制塞进仓库历史
+dist/
+*.love
+
+# ---- 工具工作区 ----
+# screenshots/（探针截图）+ memory/（项目日记）+ docs/（ROADMAP、PACKAGING 等内部笔记）
+# 都含本地绝对路径与调试过程，属于写给自己的东西，不进公开仓库
+.workbuddy/
+.idea/
+.vscode/
+
+# ---- LÖVE 存档 ----
+# 正常落在 ~/Library/Application Support/LOVE/spider/settings.txt，
+# 但在项目目录内启动、或改过 t.identity 时可能落到本地。里面是个人分数与胜率。
+settings.txt
+*.tmp
