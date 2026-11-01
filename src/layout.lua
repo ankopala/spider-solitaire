@@ -91,8 +91,13 @@ function M.columnBandAt(vx, vy)
 end
 
 -- 鼠标是否落在 stock（牌库）上？M4 补牌会用到
+--
+-- 宽度要按【整叠】算，不只是最上面那张：5 张向右错开 STOCK_STACK_DX，
+-- 牌堆实际宽 100 + 4×7 = 128。只取 STOCK_W 的话，用户点右侧露出的那 28px
+-- 会没反应 —— 看到的和点得到的不一致。
 function M.hitTestStock(vx, vy)
-  return pointInRect(vx, vy, const.STOCK_X, const.STOCK_Y, const.STOCK_W, const.STOCK_H)
+  local w = const.STOCK_W + (const.STOCK_STACK_MAX - 1) * const.STOCK_STACK_DX
+  return pointInRect(vx, vy, const.STOCK_X, const.STOCK_Y, w, const.STOCK_H)
 end
 
 -- 鼠标是否落在撤销按钮上？M7 用。

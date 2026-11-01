@@ -16,6 +16,7 @@ local statemachine = require("src.statemachine")
 local menu     = require("src.states.menu")
 local settings = require("src.states.settings")
 local playing  = require("src.states.playing")
+local leave    = require("src.states.leave")
 local resign   = require("src.states.resign")
 local won      = require("src.states.won")
 local seedState = require("src.states.seed")
@@ -106,6 +107,12 @@ function love.load()
     newRng   = newRng,                            -- 种子 -> rng(n) 闭包
     quit     = function() love.event.quit() end,
     store    = fileStore,
+
+    -- 剪贴板（M19）：面板上的种子可以一键复制，种子屏可以 Cmd+V 粘贴。
+    -- 和 quit / makeSeed 一样注入 —— 状态层的 mousepressed / keypressed 里
+    -- 不许出现 love.*，否则终端测试加载 states 时就必须 mock 整个 love。
+    setClipboard = function(s) love.system.setClipboardText(s) end,
+    getClipboard = function() return love.system.getClipboardText() end,
   }
 
   -- 设置一改就落盘。放在这里而不是 settings.lua 里，因为只有 main 认识 love。
@@ -118,6 +125,7 @@ function love.load()
   sm.states.settings = settings.new(ctx)
   sm.states.seed     = seedState.new(ctx)
   sm.states.playing  = playing.new(ctx)
+  sm.states.leave    = leave.new(ctx)
   sm.states.resign   = resign.new(ctx)
   sm.states.won      = won.new(ctx)
 
@@ -130,7 +138,7 @@ function love.load()
   print("  H = ask for a hint (settings picks auto notice vs. a Hint button)")
   print("  Resign (top right) = give up: restart the same deal, or deal a fresh one")
   print("  menu > Play a seed = replay a deal from its 10-digit seed")
-  print("  Esc = deselect / back to menu    R = redeal    D = dump    F1 = debug overlay")
+  print("  Esc = deselect / leave the table (asks first)    R = redeal    D = dump    F1 = debug overlay")
 
   -- 调试键只在开了开关时才提。正常启动一个字都不多 —— 这一段和玩家无关。
   if ctx.dev then

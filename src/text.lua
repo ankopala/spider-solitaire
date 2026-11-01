@@ -121,16 +121,33 @@ M.main_menu  = "Main menu"
 -- ===== 种子输入屏（M12）=====
 M.seed_title = "Play a seed"
 M.seed_lede  = "same seed, same 104 cards"
-M.seed_hint  = "0-9 type   backspace delete   enter deal   esc back"
+-- "v paste"：LÖVE 的 Cmd+V 也会产生 keypressed("v")，所以一个绑定同时覆盖
+-- 裸按与组合键（读修饰键才需要 love.keyboard，那是状态层不许碰的东西）。
+M.seed_hint  = "0-9 type   v paste   backspace delete   enter deal   esc back"
 M.seed_will  = "will play %s"
 M.seed_last  = "last seed %s   (%s)"
 M.seed_empty = "type at least one digit"
 M.seed_play  = "Deal"
 M.seed_back  = "Back"
 
--- 认输面板的说明。带种子：玩家想在放弃前记下这一局，还有机会。
--- 长度控制：面板 660 宽。10 位种子时整行约 578px（tiny 字号、每位数字 11.45px），
--- 两侧各余约 41px —— 这是全项目最挤的一行，加词之前先量宽度。
-M.resign_lede_seed = "give up this deal (seed %s) - score and moves are lost"
+-- ===== 种子显示 + 复制（M19）=====
+-- 三处面板（Esc 离开 / 认输 / 结算屏）共用一句话，别各写一份：
+-- 少一个 "seed" 前缀，玩家就分不清那个数字是分数还是种子。
+M.seed_chip = "seed %s"
+M.copy      = "Copy"
+M.copy_done = "Copied"
+
+-- 认输面板的说明沿用上面那句 resign_lede（M19 起种子不再塞进这句话里，
+-- 它有自己的方框 + 复制按钮，这句只剩"后果"）。
+
+-- ===== 离开牌桌（M15）=====
+-- 和认输面板的区别只有一句话：Esc 离开【不记账】。文案必须把这句说出来，
+-- 否则玩家会以为"走了也算一局"，下次不敢按。
+-- 三个出口都不许调 persist.recordResult —— 全项目唯一的记账点在 resign 的 New deal。
+M.leave_title   = "Leave the table?"
+M.leave_lede    = "leave this deal - nothing is scored"
+M.leave_keep    = { name = "Keep playing",      sub = "back to the table" }
+M.leave_restart = { name = "Restart this deal", sub = "the same 104 cards, laid out the same way" }
+M.leave_menu    = { name = "Main menu",         sub = "the deal ends - nothing is scored" }
 
 return M

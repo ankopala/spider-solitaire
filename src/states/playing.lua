@@ -4,7 +4,7 @@
 -- main.lua 只负责窗口、缩放、把事件转发给状态机。
 --
 -- 键盘：
---   Esc  有选中 → 取消选中；没有选中 → 回主菜单
+--   Esc  有选中 → 取消选中；没有选中 → 打开"离开确认"面板（M15，不再直接回菜单）
 --   Z    撤销（Ctrl+Z 也走这里；底部还有个可点的 Undo 按钮）
 --   H    要一次提示（两种模式都有效；button 模式下底部也有个 Hint 按钮）
 --   R    重新发牌（调试用）      D 终端打印牌桌      F1 调试浮层
@@ -143,6 +143,7 @@ function M.new(ctx)
     self.anim      = anim.queue()     -- 换局时把上一局的动画全部丢掉
     self.press     = nil
     self.drag      = nil
+    self.pendingLeave = false         -- ⚠ M15：上一局挂起的 Esc 绝不能漏到这一局
     self.winTimer  = 0
     self.hint      = nil
     self.hintKind  = "moves"
@@ -312,6 +313,25 @@ function M.new(ctx)
       self.hintDirty = false
     end
 
+    -- M15：动画挡下的 Esc 请求在这里兑现。
+    --
+    -- 为什么不在 keypressed 里直接弹框：动画只由本函数推进，那时切走会把画面
+    -- 冻结在半空帧；而"刚开局就想退出"恰恰是最常见的一次 Esc。
+    -- 挂起而不是丢弃，是因为玩家的意图是明确的，只是晚一秒执行。
+    --
+    -- ⚠ 必须排在胜利判定【之前】，并在赢了时放弃请求：
+    --   收组动画结束的那一帧 isWon 正好变 true，这时该走结算屏，不该弹"要离开吗"。
+    if self.pendingLeave then
+      if game.isWon(self.g) then
+        self.pendingLeave = false        -- 这局已经有结果了，让胜利流程接管
+      elseif not anim.busy(self.anim) then
+        self.pendingLeave = false
+        print("[key] leave dialog (deferred until the animation ended)")
+        self:requestLeave()
+        return                           -- 已经切走了，别再碰 self / self.g
+      end
+    end
+
     -- 胜利判定放在 update 而不是 tryMove 里：
     -- 这样不管账是"移动收组"还是"补牌收组"还是"外部改了 foundations"，都能被捕捉到。
     --
@@ -445,6 +465,21 @@ function M.new(ctx)
 
     if self.ctx.saveSettings then self.ctx.saveSettings() end
     return true
+  end
+
+  -- ===== 离开确认（M15）=====
+  --
+  -- 唯一的"我要走了"入口：清掉手上的拖拽/按下状态，把牌局交给 leave 面板。
+  -- 面板的三个出口都不记账（Esc 离开从来不算输），和 resign 的 New deal 是两回事。
+  --
+  -- ⚠ 调用之后必须立刻 return：sm:set 是【同步】的，它会在本函数返回前跑完
+  --   playing:leave（recordWin，幂等）和 leave:enter。之后再碰 self / self.g
+  --   就是在操作一个已经不是当前状态的对象。
+  function s:requestLeave()
+    if not self.g then return end
+    self.drag  = nil        -- 手里还拿着牌时不要带着它进对话框
+    self.press = nil
+    self.ctx.sm:set("leave", { game = self.g })
   end
 
   -- 离开时兜一次：极端情况下 update 还没来得及跑就切走了
@@ -612,10 +647,14 @@ function M.new(ctx)
       end
     end
 
-    -- 发牌 / 收组动画期间：游戏操作一律不接，但允许离开和看调试
+    -- 发牌 / 收组动画期间：游戏操作一律不接。
+    --
+    -- M15：Esc 在这里既不立刻弹框、也不丢 —— 记下意图，等动画播完再问（见 update）。
+    -- 只有 blocking 动画（开局发牌 / 收组）会走到这里，普通移动动画期间 Esc 是立刻生效的。
     if anim.busy(self.anim) then
       if key == "escape" then
-        self.ctx.sm:set("menu")
+        self.pendingLeave = true
+        print("[key] leave requested - waiting for the animation to finish")
       elseif key == "f1" then
         self.showDebug = not self.showDebug
         print("debug overlay: " .. (self.showDebug and "ON" or "OFF"))
@@ -623,13 +662,18 @@ function M.new(ctx)
       return
     end
 
-    -- 已经赢了：这局就结束了，只放行离开和看调试。
+    -- 已经赢了：这局就结束了，只放行看调试。
     -- 否则玩家能在 0.8 秒的展示期里按 Z 撤销，变成"记了一次赢，牌局又退回未赢"。
+    --
+    -- M15：这里【不弹离开确认、也不回菜单】，理由是账不是画面：
+    --   · 赢的那一刻已经记账（resultRecorded = true）；
+    --   · 确认框里 "Restart this deal" 会就地重开同一副牌，而 playing:enter({resume=true})
+    --     不复位 resultRecorded —— 玩家重开后又赢一次，统计却只认第一次，这账没人解释得清；
+    --   · 展示期只有 0.8 秒，之后自己切到结算屏，没有"留下"的诉求。
     if game.isWon(g) then
-      if key == "escape" then
-        self.ctx.sm:set("menu")
-      elseif key == "f1" then
+      if key == "f1" then
         self.showDebug = not self.showDebug
+        print("debug overlay: " .. (self.showDebug and "ON" or "OFF"))
       end
       return
     end
@@ -637,9 +681,15 @@ function M.new(ctx)
     if key == "escape" then
       if g.selected then
         game.deselect(g)
+        -- ⚠ 必须一起清 drag：dragOffset() 只看 d.moved、不看 g.selected，
+        --   不清的话那一段牌会继续被画在鼠标偏移处（"浮在半空"）。
+        --   右键取消选中（mousepressed 里）早就清了，这两条路径必须一致。
+        self.drag = nil
         print("[key] deselect")
       else
-        self.ctx.sm:set("menu")
+        -- M15：不再直接回菜单，先问一句（面板三个出口都不记账）
+        self:requestLeave()
+        return                     -- sm:set 是同步的，之后不许再碰 self / g
       end
     elseif key == "r" then
       anim.clear(self.anim)                 -- 旧局还在飞的牌立刻作废

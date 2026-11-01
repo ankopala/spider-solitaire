@@ -74,6 +74,20 @@ function M.new(ctx)
       return
     end
 
+    -- 粘贴（M19）。⚠ Cmd+V 在 LÖVE 里一样产生 keypressed("v")，所以这一个分支
+    -- 同时覆盖裸按与组合键；要靠 love.keyboard.isDown 读修饰键才是违规
+    -- （状态层只在 draw() 里碰 love），这里不需要。
+    -- 剪贴板从 ctx 注入，没注入（终端测试）就当作空剪贴板。
+    if key == "v" then
+      local clip = self.ctx.getClipboard and self.ctx.getClipboard()
+      local pasted = seed.paste(self.buf, clip)
+      if pasted ~= self.buf then
+        self.buf = pasted
+        self.msg = ""
+      end
+      return
+    end
+
     local nextBuf = seed.push(self.buf, key)
     if nextBuf ~= self.buf then
       self.buf = nextBuf

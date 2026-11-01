@@ -162,6 +162,31 @@ check("连开 200 局种子不撞", (function()
   return dup == 0
 end)())
 
+-- ===== 粘贴（M19）=====
+-- 面板上复制出来的种子是拿去粘回来的，所以 paste 要同时干两件事：
+-- 剥掉非数字（"seed 42"、空格、回车都可能连在一起被复制走），
+-- 再按【剩余位数】截断（粘出 12 位就等于粘进一个非法种子）。
+--
+-- 语义刻意是"补齐"而不是"替换"：这一屏本来就是一位一位往里敲，
+-- 想重来有 delete 键。替换会让"敲了 5 位、粘一下前 5 位没了"。
+
+check("空缓冲直接吃下整串数字", seed.paste("", "1234") == "1234")
+check("空格 / 字母 / 制表符 / 回车全被剥掉",
+  seed.paste("", "  1 2a3\t4\n") == "1234")
+check("带 seed 前缀的整句也能用", seed.paste("", "seed 42") == "42")
+check("一个数字都没有就原样返回", seed.paste("", "abc") == "")
+check("nil 缓冲当作空串", seed.paste(nil, "42") == "42")
+check("nil 剪贴板不改缓冲", seed.paste("12", nil) == "12")
+check("非字符串剪贴板不改缓冲", seed.paste("12", 42) == "12")
+
+local half = math.floor(D / 2)
+local head = rep("1", half)
+check("已有内容时是补齐而不是覆盖",
+  seed.paste(head, rep("7", D)) == head .. rep("7", D - half))
+
+check("超出剩余位数就截断", seed.paste("", rep("9", D + 5)) == NINES)
+check("缓冲满了再粘不动", seed.paste(NINES, "8") == NINES)
+
 -- ===== 汇总 =====
 print("")
 print(string.rep("=", 62))

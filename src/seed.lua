@@ -89,6 +89,23 @@ function M.pop(buf)
   return string.sub(buf, 1, #buf - 1)
 end
 
+-- 把剪贴板文本里的数字补到缓冲末尾（M19）。
+--
+-- 为什么是"补"而不是"替换"：这一屏的语义就是"一位一位往里敲"，粘贴只是把
+-- 一次敲很多位变成一个事件。想重来有 delete 键，不至于要靠粘贴去清空。
+-- 剥掉非数字是必须的：从别处粘一句 "seed 1234567890" 时，全塞进去会变成非法输入。
+function M.paste(buf, clip)
+  if type(buf) ~= "string" then buf = "" end
+  if type(clip) ~= "string" then return buf end
+
+  local digits = string.gsub(clip, "%D", "")
+  if digits == "" then return buf end
+
+  local room = M.DIGITS - #buf
+  if room <= 0 then return buf end
+  return buf .. string.sub(digits, 1, room)
+end
+
 -- 输入框里显示的样子：没填的位置用 "-" 占位，玩家能看出还差几位。
 function M.display(buf)
   if type(buf) ~= "string" then buf = "" end

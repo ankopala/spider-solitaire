@@ -22,13 +22,16 @@ local game         = require("src.game")
 local layout       = require("src.layout")
 local persist      = require("src.persist")
 local seedMod      = require("src.seed")
+local text         = require("src.text")
 local statemachine = require("src.statemachine")
 local menu         = require("src.states.menu")
 local settings     = require("src.states.settings")
 local seedState    = require("src.states.seed")
 local playing      = require("src.states.playing")
+local leaveState   = require("src.states.leave")
 local resign       = require("src.states.resign")
 local won          = require("src.states.won")
+local seedboxMod   = require("src.seedbox")
 
 -- ===== 断言小工具 =====
 local passed, failed = 0, 0
@@ -236,7 +239,7 @@ st:keypressed("return")
 check("焦点在 Start 时 Enter → playing", lastLog(ctx3) == "playing")
 
 -- ===== 4. 游戏中 =====
-section("4. playing：开局 / 退选 / 回菜单 / 重发")
+section("4. playing：开局 / 退选 / 离开确认 / 重发")
 
 local ctx4 = makeCtx(2)
 local pl = playing.new(ctx4)
@@ -263,17 +266,31 @@ local cx = const.colX(1) + const.CARD_W / 2
 local cy = layout.cardY(col1, #col1) + 20
 pl:mousepressed(cx, cy, 1)
 check("点顶牌可以选中", pl.g.selected ~= nil)
+check("按下牌身就建了 drag（拖拽的前提）", pl.drag ~= nil)
 
--- 有选中时 Esc 只取消选中，不回菜单
+-- 真的拖起来：位移超过阈值后 dragOffset 才有值
+pl:mousemoved(cx + const.DRAG_START * 2, cy + 40)
+check("拖动超过阈值后 dragOffset 非空", pl:dragOffset() ~= nil)
+
+-- 有选中时 Esc 只取消选中，不弹框、不切状态
 ctx4.log = {}
 pl:keypressed("escape")
 check("Esc 取消选中", pl.g.selected == nil)
+check("Esc 取消选中时清掉拖拽（和右键一致）", pl.drag == nil and pl:dragOffset() == nil)
 check("Esc 取消选中时不切状态", #ctx4.log == 0)
 
--- 没选中时 Esc 回菜单
+-- 没选中时 Esc 打开"离开确认"，不再直接回菜单（M15）
 ctx4.log = {}
 pl:keypressed("escape")
-check("Esc 回菜单", lastLog(ctx4) == "menu")
+check("Esc 打开离开确认（不是直接回菜单）", lastLog(ctx4) == "leave")
+check("确认框拿到的是同一个牌局对象", ctx4.lastArg ~= nil and ctx4.lastArg.game == pl.g)
+
+local lv4 = leaveState.new(ctx4)
+lv4:enter(ctx4.lastArg)
+ctx4.log = {}
+lv4:activate(lv4.idxKeep)
+check("Keep playing → 回 playing", lastLog(ctx4) == "playing")
+check("Keep playing 带 resume（不重发牌）", ctx4.lastArg ~= nil and ctx4.lastArg.resume == true)
 
 -- 重发牌
 ctx4.log = {}
@@ -519,6 +536,7 @@ ctx7.sm = sm7
 sm7.states.menu     = menu.new(ctx7)
 sm7.states.settings = settings.new(ctx7)
 sm7.states.playing  = playing.new(ctx7)
+sm7.states.leave    = leaveState.new(ctx7)
 sm7.states.won      = won.new(ctx7)
 
 sm7:set("menu")
@@ -561,6 +579,7 @@ ctx8.sm = sm8
 sm8.states.menu     = menu.new(ctx8)
 sm8.states.settings = settings.new(ctx8)
 sm8.states.playing  = playing.new(ctx8)
+sm8.states.leave    = leaveState.new(ctx8)
 sm8.states.resign   = resign.new(ctx8)
 sm8.states.won      = won.new(ctx8)
 
@@ -639,6 +658,265 @@ check("中心命中", layout.hitTestResign(const.RESIGN_X + const.RESIGN_W / 2,
 check("左边界外不命中", layout.hitTestResign(const.RESIGN_X - 1,
   const.RESIGN_Y + 10) == false)
 
+-- ===== 8b. 离开确认（M15）=====
+section("8b. 离开确认：Esc 不再直接回菜单，三个出口全都不记账")
+
+-- 真状态机 + 会数落盘次数的 ctx（不改 makeCtx —— 它故意没有 saveSettings）
+local function makeLeaveCtx()
+  local c = makeCtx(4, 4321)
+  c.saves = 0
+  c.saveSettings = function() c.saves = c.saves + 1 end
+  return c
+end
+
+local ctx9 = makeLeaveCtx()
+local sm9  = statemachine.new({}, ctx9)
+ctx9.sm = sm9
+sm9.states.menu    = menu.new(ctx9)
+sm9.states.playing = playing.new(ctx9)
+sm9.states.leave   = leaveState.new(ctx9)
+
+sm9:set("playing")
+local g9    = sm9.states.playing.g
+local snap9 = game.dump(g9)          -- 开局那张牌桌的文本指纹
+
+check("开局是空局（moves == 0）—— 空局不做特例", g9.moves == 0)
+
+sm9:keypressed("escape")
+check("空局按 Esc 也弹确认框", sm9:is("leave") == true)
+check("弹框时把牌局传给面板（背景要画这一局）", sm9.states.leave.g == g9)
+check("弹框本身不动牌局", game.dump(g9) == snap9)
+
+local lv9 = sm9.states.leave
+check("焦点落在 Keep playing", lv9.focus == lv9.idxKeep)
+check("Keep playing 是 primary", lv9.buttons[lv9.idxKeep].primary == true)
+check("Main menu 垫底（破坏性动作不抢焦点）", lv9.idxMenu == #lv9.buttons)
+
+lv9:keypressed("up")
+check("↑ 从第 1 项绕过顶端到 Main menu", lv9.focus == lv9.idxMenu)
+lv9:keypressed("down")
+check("↓ 从最后一项绕过底部回到 Keep playing", lv9.focus == lv9.idxKeep)
+for _ = 1, 3 do lv9:keypressed("down") end
+check("↓ 三次绕一圈回到 Keep playing", lv9.focus == lv9.idxKeep)
+
+-- 两个面板长得几乎一样，但这里的 "3" 是最坏出口 —— 刻意不给数字快捷键
+lv9:keypressed("3")
+check("数字键 3 在离开面板里不直选（不会直接退出到菜单）", sm9:is("leave") == true)
+lv9:keypressed("1")
+check("数字键 1 也不直选", sm9:is("leave") == true and lv9.focus == lv9.idxKeep)
+
+sm9:keypressed("escape")
+check("Esc = Keep playing", sm9:is("playing") == true)
+check("Keep playing 走 resume：还是同一副牌", sm9.states.playing.g == g9)
+check("牌桌没被动过", game.dump(g9) == snap9)
+
+-- 把牌局弄"脏"，否则"重开"和"没动过"看起来一样
+g9.score = 320
+g9.moves = 27
+check("牌局确实脏了（和开局指纹不同）", game.dump(g9) ~= snap9)
+
+sm9:keypressed("escape")
+check("再次 Esc 又弹框", sm9:is("leave") == true)
+local lv9b = sm9.states.leave
+local rb9  = lv9b.buttons[lv9b.idxRestart]
+sm9:mousepressed(rb9.x + rb9.w / 2, rb9.y + rb9.h / 2, 1)
+check("Restart this deal → 回 playing", sm9:is("playing") == true)
+check("Restart 后分数回到开局值", g9.score == const.SCORE_START)
+check("Restart 后步数归零", g9.moves == 0)
+check("Restart 后牌桌恢复成开局那一副（同一副牌、同样的位置）", game.dump(g9) == snap9)
+check("Restart 后撤销栈清空", game.undoDepth(g9) == 0)
+
+sm9:keypressed("escape")
+check("第三次 Esc 弹框", sm9:is("leave") == true)
+local lv9c = sm9.states.leave
+local mb9  = lv9c.buttons[lv9c.idxMenu]
+sm9:mousepressed(mb9.x + mb9.w / 2, mb9.y + mb9.h / 2, 1)
+check("Main menu → menu", sm9:is("menu") == true)
+-- 记账表到现在本该完全没被碰过：recordResult 一次都没跑，所以连字段都不存在。
+-- 这比断言 "games[4] == 0" 更强 —— 后者分不清"记了 0 局"和"根本没记"。
+check("三个出口都没动过统计表（games 仍是 nil）", ctx9.settings.games == nil)
+check("也没有记胜局（wins 仍是 nil）", ctx9.settings.wins == nil)
+check("三个出口一次都没落盘", ctx9.saves == 0)
+
+-- 面板几何：用 s 上存的 px/py/pw/ph，不在测试里重抄 660/372
+local lvG = leaveState.new(ctx9)
+lvG:enter({ game = g9 })
+local inPanel = true
+for _, b in ipairs(lvG.buttons) do
+  if b.x < lvG.px or b.y < lvG.py
+     or b.x + b.w > lvG.px + lvG.pw
+     or b.y + b.h > lvG.py + lvG.ph then inPanel = false end
+end
+check("三个按钮都在面板矩形内", inPanel)
+
+local noOverlap = true
+for i = 1, #lvG.buttons - 1 do
+  if lvG.buttons[i].y + lvG.buttons[i].h >= lvG.buttons[i + 1].y then noOverlap = false end
+end
+check("三个按钮互不重叠", noOverlap)
+
+lvG:leave()
+check("离开面板时松掉牌局引用", lvG.g == nil)
+lvG:enter({ game = g9 })
+lvG.focus = lvG.idxMenu
+lvG:enter({ game = g9 })
+check("第二次打开时焦点复位到 Keep playing", lvG.focus == lvG.idxKeep)
+
+-- M19：种子不再嵌在说明句里，说明行只剩"不记账"那一句 —— 宽度用字符数代理守住
+-- （终端里量不到字体宽度；tiny 下数字最宽 ≈ 11.47px，按 660 宽反推上限）。
+local panelCharsMax = math.floor(660 / 11.47)
+check("离开说明行装得进面板", #text.leave_lede <= panelCharsMax)
+check("认输说明行装得进面板", #text.resign_lede <= panelCharsMax)
+
+-- 动画期：Esc 挂起，播完再弹（不是丢弃、也不是立刻冻结画面）
+local ctx10 = makeLeaveCtx()
+local sm10  = statemachine.new({}, ctx10)
+ctx10.sm = sm10
+sm10.states.playing = playing.new(ctx10)
+sm10.states.leave   = leaveState.new(ctx10)
+sm10:set("playing")
+
+local pl10 = sm10.states.playing
+pl10:update(0.01)          -- 第一帧把 g.events 搬进动画队列，busy 才会为真
+check("（前提）开局发牌动画确实在拦输入", animMod.busy(pl10.anim) == true)
+
+sm10:keypressed("escape")
+check("动画期间 Esc 不立刻切状态", sm10:is("playing") == true)
+check("动画期间 Esc 被挂起，没有被吞掉", pl10.pendingLeave == true)
+
+for _ = 1, 40 do
+  if sm10:is("leave") then break end
+  pl10:update(0.1)
+end
+check("动画播完后自动弹确认框", sm10:is("leave") == true)
+check("挂起标记已清，不会弹第二次", pl10.pendingLeave == false)
+
+-- 已获胜展示期：Esc 既不弹框也不回菜单（账已经记完了，没有"留下"的诉求）
+local ctx11 = makeLeaveCtx()
+local sm11  = statemachine.new({}, ctx11)
+ctx11.sm = sm11
+sm11.states.playing = playing.new(ctx11)
+sm11.states.leave   = leaveState.new(ctx11)
+sm11.states.won     = won.new(ctx11)
+sm11:set("playing")
+
+local pl11 = sm11.states.playing
+pl11:update(0.01)
+sm11:keypressed("escape")
+check("（前提）动画期 Esc 被挂起", pl11.pendingLeave == true)
+
+pl11.g.foundations = { spades = 2, hearts = 2, diamonds = 2, clubs = 2 }
+pl11:update(0.01)          -- 这一帧判定为胜：挂起的请求必须被丢弃
+check("赢了之后挂起的 Esc 被丢弃", pl11.pendingLeave == false)
+
+sm11:keypressed("escape")
+check("已获胜展示期按 Esc 既不弹框", sm11:is("playing") == true)
+check("也没有直接回菜单", sm11:is("menu") == false)
+
+for _ = 1, 12 do pl11:update(0.1) end
+check("0.8 秒后自己走到结算屏", sm11:is("won") == true)
+
+-- ===== 8c. 种子复制控件（M19）=====
+section("8c. 种子复制：Esc / 认输 / 结算三屏共用同一个控件")
+
+-- 剪贴板走 ctx 注入（状态层不许碰 love.system）——测试里塞两个假函数数次数。
+-- 这条"能数次数"的性质就是注入的唯一理由：状态里如果直接调 love.system，
+-- 终端测试根本加载不了这些文件。
+local function makeClipCtx(seedNum)
+  local c = makeCtx(4, seedNum or 24680)
+  c.saves = 0
+  c.saveSettings = function() c.saves = c.saves + 1 end
+  c.clip, c.clipCalls, c.readClip = nil, 0, ""
+  c.setClipboard = function(v) c.clip = v; c.clipCalls = c.clipCalls + 1 end
+  c.getClipboard = function() return c.readClip end
+  return c
+end
+
+local ctxC = makeClipCtx()
+local smC  = statemachine.new({}, ctxC)
+ctxC.sm = smC
+smC.states.playing = playing.new(ctxC)
+smC.states.leave   = leaveState.new(ctxC)
+smC:set("playing")
+local gC = smC.states.playing.g
+smC:keypressed("escape")
+
+local lvC  = smC.states.leave
+local boxC = lvC.box
+
+check("控件整组在面板内", boxC.x >= lvC.px and boxC.x + boxC.w <= lvC.px + lvC.pw)
+check("复制按钮在种子方框右侧", boxC.btnX >= boxC.chipX + boxC.chipW)
+check("控件压不到第一个出口按钮", boxC.y + boxC.h <= lvC.buttons[1].y)
+check("控件两侧各留 ≥ 40px", boxC.w <= lvC.pw - 80)
+check("复制按钮不在焦点链里（出口仍是 3 项）", #lvC.buttons == 3)
+
+-- 方框是"值"，按钮才是"动作"：点方框不该动剪贴板
+smC:mousepressed(boxC.chipX + 10, boxC.y + boxC.h / 2, 1)
+check("点种子方框不复制", ctxC.clipCalls == 0)
+
+local snapC = game.dump(gC)
+smC:mousepressed(boxC.btnX + boxC.btnW / 2, boxC.y + boxC.h / 2, 1)
+check("点 Copy 写进剪贴板", ctxC.clipCalls == 1)
+check("复制的是补零后的 10 位种子", ctxC.clip == seedMod.format(gC.seed))
+check("复制内容恰好 DIGITS 位且全数字",
+  #ctxC.clip == seedMod.DIGITS and string.match(ctxC.clip, "^%d+$") ~= nil)
+check("复制不切状态（还留在确认框里）", smC:is("leave") == true)
+check("复制不动牌桌", game.dump(gC) == snapC)
+check("复制不落盘、不记账", ctxC.saves == 0 and ctxC.settings.games == nil)
+check("复制后按钮切成 Copied", boxC.copiedT > 0)
+
+lvC:update(const.SEEDBOX_HOLD + 0.05)
+check("1.2 秒后自己退回 Copy", boxC.copiedT == 0)
+
+smC:keypressed("c")
+check("c 键也能复制", ctxC.clipCalls == 2)
+
+smC:keypressed("escape")
+check("复制过之后 Esc 仍是 Keep playing", smC:is("playing") == true)
+
+-- 认输面板：同一套控件，但它的出口里有一个会记账 —— 复制绝不能碰到它
+local ctxRc = makeClipCtx()
+local rsC   = resign.new(ctxRc)
+rsC:enter({ game = gC })
+rsC:mousepressed(rsC.box.btnX + 4, rsC.box.y + 4, 1)
+check("认输面板的 Copy 也写剪贴板", ctxRc.clip == seedMod.format(gC.seed))
+check("认输面板复制不记账、不落盘", ctxRc.saves == 0 and ctxRc.settings.games == nil)
+check("认输面板复制不切状态", #ctxRc.log == 0)
+
+-- 结算屏：label 还要带难度（一局的身份是 seed + difficulty）
+local ctxWc = makeClipCtx()
+local wsC   = won.new(ctxWc)
+wsC:enter({ game = gC, difficulty = 4, score = 500, moves = 12 })
+check("结算屏的种子行带难度",
+  wsC:boxText() == string.format(text.won_seed, seedMod.format(gC.seed), text.suitCount(4)))
+check("结算屏控件在面板内、在按钮之上",
+  wsC.box.x >= wsC.px and wsC.box.x + wsC.box.w <= wsC.px + wsC.pw
+  and wsC.box.y + wsC.box.h <= wsC.buttons[1].y)
+check("结算屏出口仍是 2 项（复制不进焦点链）", #wsC.buttons == 2)
+check("结算屏方框用的是加宽版", wsC.box.chipW == const.SEEDBOX_CHIP_W_LONG)
+-- 270px 这个宽度是按"今天这行最长的样子"定的：字符串再变长就得重新量宽度。
+check("结算屏种子行不超过 27 字符", #(wsC:boxText()) <= 27)
+wsC:mousepressed(wsC.box.btnX + 4, wsC.box.y + 4, 1)
+-- ⚠ 复制的必须是纯数字，不是那行显示文字（" (4 suits)" 不该进剪贴板）
+check("结算屏 Copy 写的是纯种子数字", ctxWc.clip == seedMod.format(gC.seed))
+check("结算屏复制不切状态", #ctxWc.log == 0)
+
+-- 没有牌局：不画、也点不中（别留一个点了没反应的空框）
+local ctxN = makeClipCtx()
+local lvN  = leaveState.new(ctxN)
+lvN:enter({})
+check("没有牌局时没有显示文字", seedboxMod.text(lvN.g) == nil)
+check("没有牌局时也没有可复制的值", seedboxMod.value(lvN.g) == nil)
+lvN:mousepressed(lvN.box.btnX + 4, lvN.box.y + 4, 1)
+check("没有牌局时点 Copy 不写剪贴板", ctxN.clipCalls == 0)
+
+-- 没注入 setClipboard（就是 makeCtx 的常态）：不崩，也绝不假报成功
+local ctxQ = makeCtx(4, 13579)
+local lvQ  = leaveState.new(ctxQ)
+lvQ:enter({ game = gC })
+lvQ:mousepressed(lvQ.box.btnX + 4, lvQ.box.y + 4, 1)
+check("没有剪贴板注入时不崩、也不假报 Copied", lvQ.box.copiedT == 0)
+
 -- ===== 9. 种子屏 =====
 section("9. 种子屏：输入 / 退格 / 清空 / 开局")
 
@@ -675,6 +953,45 @@ check("输入 7 按 Enter → playing，种子里是 7",
 ctxS.log = {}
 sd:keypressed("escape")
 check("Esc 回菜单", lastLog(ctxS) == "menu")
+
+-- --- 粘贴（M19）---
+-- Cmd+V 在 LÖVE 里同样产生 keypressed("v")，所以这里绑的就是裸 "v"。
+sd:enter()
+check("（前提）重新进入后缓冲为空", sd.buf == "")
+
+ctxS.getClipboard = function() return "  12ab34  " end
+sd:keypressed("v")
+check("粘贴只取其中的数字", sd.buf == "1234")
+
+sd:keypressed("delete")            -- 每个用例从空缓冲开始，别让上一次的残留影响判断
+sd.msg = "old"
+ctxS.getClipboard = function() return "seed 0000123456789" end
+sd:keypressed("v")
+check("带着前缀的整句也能粘，且按 DIGITS 截断",
+  sd.buf == string.sub("0000123456", 1, seedMod.DIGITS))
+check("粘贴成功后清掉报错行", sd.msg == "")
+
+sd:keypressed("delete")
+sd:keypressed("1")                 -- 先手动敲 5 位，再粘 8 位 → 补满 10 位
+for _ = 2, 5 do sd:keypressed("1") end
+ctxS.getClipboard = function() return "99999999" end
+sd:keypressed("v")
+check("已有内容时是补齐而不是覆盖",
+  sd.buf == string.rep("1", 5) .. string.rep("9", seedMod.DIGITS - 5))
+
+ctxS.getClipboard = function() return "1234567890" end
+sd:keypressed("v")
+check("缓冲满了再粘不动", #sd.buf == seedMod.DIGITS)
+
+sd:keypressed("delete")
+check("（前提）delete 清空", sd.buf == "")
+ctxS.getClipboard = nil
+sd:keypressed("v")
+check("没注入剪贴板时按 v 不崩、也不改缓冲", sd.buf == "")
+
+ctxS.getClipboard = function() return "seed 42" end
+sd:keypressed("v")
+check("粘一句带前缀的话也能用", sd.buf == "42")
 
 -- ===== 10. 同种子同一局 =====
 section("10. 同种子同一局")
@@ -769,8 +1086,15 @@ check("Keep playing 不计局数", gamesOf(ctxK, 4) == 0)
 
 ctxK.log = {}
 plK:keypressed("escape")
-check("Esc 回菜单", lastLog(ctxK) == "menu")
-check("Esc 不计局数", gamesOf(ctxK, 4) == 0)
+check("Esc 打开离开确认（不再直接回菜单）", lastLog(ctxK) == "leave")
+check("Esc 弹框不计局数", gamesOf(ctxK, 4) == 0)
+
+local lvK = leaveState.new(ctxK)
+lvK:enter({ game = plK.g })
+ctxK.log = {}
+lvK:activate(lvK.idxMenu)
+check("从确认框点 Main menu 才回菜单", lastLog(ctxK) == "menu")
+check("Main menu 也不计局数", gamesOf(ctxK, 4) == 0)
 
 -- R 重发也不计：换了一副牌，但上一局没有"结论"
 local ctxRR = makeCtx(4)

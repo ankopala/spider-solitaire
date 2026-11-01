@@ -31,6 +31,12 @@ const.STOCK_X = 1130
 const.STOCK_Y = 530
 const.STOCK_W = 100
 const.STOCK_H = 140
+-- 最多叠 5 张，每张向右错开这么多。render 与测试共用，别再写字面量 4。
+-- ⚠ 4px 时 5 张只错开 16px，条带太窄，1px 的层间暗缝在正常观看距离下分辨不出
+-- （用户反馈"像没有边界"）。7px 是"看得出独立卡片"与"不占太多横向空间"的折中：
+-- 5 张合计 100+28=128，右沿 1258，仍留 22px。
+const.STOCK_STACK_DX = 7
+const.STOCK_STACK_MAX = 5       -- 一叠最多显示几张（= 剩余轮数上限）
 
 const.FOUND_COUNT = 8
 const.FOUND_W     = 60
@@ -104,6 +110,9 @@ const.COLOR_CARD_FACE      = rgb(0.95, 0.95, 0.95)   -- 牌正面底色
 const.COLOR_CARD_LINE      = rgb(0.20, 0.20, 0.22)   -- 牌边框
 const.COLOR_CARD_BACK      = rgb(0.25, 0.25, 0.30)   -- 牌背面底色
 const.COLOR_CARD_BACK_LINE = rgb(0.45, 0.45, 0.52)   -- 牌背面内框
+const.COLOR_CARD_BACK_ICON = rgb(0.35, 0.35, 0.40)   -- 牌背面蜘蛛线稿（比内框暗一档）
+const.COLOR_CARD_BACK_EDGE = rgb(0.31, 0.31, 0.36)   -- 叠压时露出的"纸边"接缝
+const.COLOR_CARD_BACK_SHADE = rgb(0.175, 0.175, 0.215) -- stock 层间暗缝（卡片之间的阴影）
 const.COLOR_SUIT_BLACK     = rgb(0.10, 0.10, 0.12)   -- ♠ ♣
 const.COLOR_SUIT_RED       = rgb(0.78, 0.15, 0.15)   -- ♥ ♦
 const.COLOR_TEXT           = rgb(0.90, 0.90, 0.90)
@@ -152,6 +161,52 @@ const.FONT_PATH   = "assets/fonts/DejaVuSans.ttf"
 const.FONT_TINY   = 18           -- 菜单说明、HUD 里的小字
 const.FONT_SMALL  = 22           -- 牌面角标、正文
 const.FONT_BIG    = 54           -- 菜单标题、You win
+
+-- ===== 牌背装饰（M16）=====
+-- 全是纯数据。绘制在 src/render.lua 的 drawSpider 里 —— 放到这里是因为
+-- render.lua 不能被终端测试加载，几何只有放在 const 才能被断言守住。
+
+const.CARD_BACK_INSET      = 7     -- 内框向内缩进
+
+-- 叠压时的「亮切边」（M18）：位置落在内框顶边上，两端缩到内框圆角之外，
+-- 才和真实内框的直线段等长。两者都从 CARD_BACK_INSET 派生，改内框会自动跟随。
+const.CARD_BACK_RIM_DY     = const.CARD_BACK_INSET                              -- 7
+const.CARD_BACK_RIM_INSET  = const.CARD_BACK_INSET + (const.CARD_R - 3)         -- 12
+const.CARD_BACK_ICON_W     = 1.8   -- 蜘蛛线宽（≤1 会被 smooth 削掉 core，出现断线感）
+const.CARD_BACK_ICON_DY    = -4    -- 蜘蛛相对牌中心上移 4px，给 stock 右下角轮数让位
+
+-- 蜘蛛：以 (0,0) 为图标中心，只写【右半边】，左半边由 drawSpider 镜像（x 取负）。
+-- 每条腿 3 点：腿根 → 膝盖 → 脚尖。腿根一律落在 x=0 的躯干内部（必被身体填充盖住，
+-- 永远看不到线头）；膝盖沿一条下降弧线排开（-30 → -17 → 0 → 12），8 条腿才张得开。
+const.SPIDER_LEGS = {
+  { 0, -14,  16, -31,  28, -22 },   -- 前腿：膝抬最高、脚尖略回收
+  { 0, -10,  23, -19,  35,  -8 },
+  { 0,  -6,  25,   1,  35,  13 },
+  { 0,  -1,  20,  14,  27,  29 },   -- 后腿：膝和脚尖都往下外侧走，别做垂直段（会像椅子腿）
+}
+
+-- 头胸部 + 腹部：cx, cy, rx, ry。两椭圆重叠 3px 形成"腰"，头小腹大（1 : 1.7）。
+-- 绘制顺序就是表中顺序：腹部后画，用底色填充把头胸的下半弧擦掉。
+const.SPIDER_BODY = {
+  { 0, -12,  8,  9 },
+  { 0,  12, 14, 16 },
+}
+
+-- ===== 种子复制控件（M19）=====
+-- 尺寸必须在【常量】里定死：面板的 mousepressed 要判定按钮矩形，而那一刻
+-- 不能去量字体宽度（事件处理里不许碰 love）。所以方框/按钮宽度是写死的，
+-- 「文字装不装得下」只能靠两条守卫：这里的注释宽度估算 + 探针截图目测。
+--
+-- 宽度依据（tiny = 18px，DejaVu Sans 每位数字 1303/2048 em ≈ 11.45px）：
+--   "seed 1234567890"              ≈ 163px  → 方框 200 两侧各留 18
+--   "seed 1234567890  (4 suits)"   ≈ 248px  → 结算屏单独用 270（见 SEEDBOX_CHIP_W_LONG）
+--   "Copied"                       ≈  55px  → 按钮 76 够
+const.SEEDBOX_H          = 28
+const.SEEDBOX_CHIP_W     = 200
+const.SEEDBOX_CHIP_W_LONG = 270   -- 结算屏那行还带难度，得单独加宽
+const.SEEDBOX_GAP        = 8
+const.SEEDBOX_BTN_W      = 76
+const.SEEDBOX_HOLD       = 1.2    -- 复制后 "Copied" 停留秒数
 
 -- ===== 派生坐标：用函数算，避免手抄 10 个数出错 =====
 

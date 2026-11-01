@@ -85,21 +85,118 @@ local function drawCardFace(c, x, y, compact)
   love.graphics.print(g, x + (w - gw) / 2, y + (h - gh) / 2 + 4)
 end
 
--- 牌背面：深色底 + 内框
+-- 牌背蜘蛛（M16）：纯线稿，只用 line + ellipse。
 --
--- 【坑】内框只该画在【整张露出】的背面牌上。
--- 列里叠压时每张只露 8px（STEP_DOWN），而内框上边在 +7px —— 正好落进这条窄缝，
--- 5 张叠下来就变成一排密集横线，远看像脏条纹。所以由调用方用 inner=false 关掉它。
-local function drawCardBack(x, y, inner)
+-- 【为什么不开 MSAA 也干净】LÖVE 11.5 默认 lineStyle = "smooth"，会在线两侧各补
+-- 一圈 1 物理像素宽的 alpha 渐变裙边（Polyline.cpp 的 overdraw + fill_color_array）。
+-- 这是几何级 AA，不依赖 multisample buffer，所以 conf.lua 里不用加 msaa。
+--
+-- 【为什么躯干要先填一遍底色】躯干只描边时，腿根会"插"在空心的身体里露出线头。
+-- 用牌背底色（与底同色，画面结果仍是线稿、不可见）填一遍就能擦掉腿根与交叠弧线。
+-- 顺序必须是 头胸(填+描) → 腹部(填+描)，腹部才会把头胸的下半弧裁成"腰"。
+local function drawSpider(cx, cy, color)
+  love.graphics.setLineWidth(const.CARD_BACK_ICON_W)
+  setColor(color)
+
+  for i = 1, #const.SPIDER_LEGS do
+    local l = const.SPIDER_LEGS[i]
+    love.graphics.line(cx + l[1], cy + l[2], cx + l[3], cy + l[4], cx + l[5], cy + l[6])
+    love.graphics.line(cx - l[1], cy + l[2], cx - l[3], cy + l[4], cx - l[5], cy + l[6])
+  end
+
+  for i = 1, #const.SPIDER_BODY do
+    local b = const.SPIDER_BODY[i]
+    setColor(const.COLOR_CARD_BACK)                     -- 遮挡色：不可见，只用来擦线
+    love.graphics.ellipse("fill", cx + b[1], cy + b[2], b[3], b[4])
+    setColor(color)
+    love.graphics.ellipse("line", cx + b[1], cy + b[2], b[3], b[4])
+  end
+
+  love.graphics.setLineWidth(1)   -- 【必须】否则下一张牌的内框会变成 1.8px
+end
+
+-- 层间暗缝：沿整张牌轮廓画一圈比底色暗的线。
+--
+-- 它读作【卡片的边】而不是「画上去的黑线」，因为 SHADE(0.175) 比牌背底色(0.25) 暗、
+-- 却比桌面(0.13) 亮 —— 落在两者之间，眼睛自然把它归到「物体与物体之间的缝」。
+--
+-- 两个调用方：
+--   stock（M17）   5 张同色牌向右错开 STOCK_STACK_DX，相邻两张之间零明度差，
+--                  不画这条线就融成一整块 128px 宽的平板。
+--   列里叠压（M18）每张只露 8px，露出的部分只剩顶边 + 左右各一个 1/4 圆弧 ——
+--                  那两个圆弧是「卡片侧边」的唯一线索。
+--
+-- x/y 各 +0.5：让 1px 线正好压在一整行像素上，不跨两行各半（那会摊成 2px 淡线）。
+local function drawBackOutline(x, y)
+  love.graphics.setLineWidth(1)
+  setColor(const.COLOR_CARD_BACK_SHADE)
+  love.graphics.rectangle("line", x + 0.5, y + 0.5,
+    const.CARD_W - 1, const.CARD_H - 1, const.CARD_R, const.CARD_R)
+end
+
+-- 牌背面：深色底 + 内框 + 蜘蛛；叠压时画「暗轮廓 + 亮切边」两层纸边
+--
+-- 三个模式，由调用方选：
+--   inner=nil  + shade=true   stock 的每一张（整张露出，画内框 + 蜘蛛 + 层间暗缝）
+--   inner=true               整张露出但没有叠压的场合（目前没有调用方，留着以防）
+--   inner=false               列里叠压，只露 8px 顶边 → 暗轮廓 + 亮切边（M18）
+--
+-- 【坑】内框和蜘蛛只该画在【整张露出】的背面牌上。
+-- 列里叠压时每张只露 8px（STEP_DOWN），而内框上边在 +7 —— 整条内框线会完整落进
+-- 这条窄缝，5 张叠下来就变成一排高对比横线，正是 M16 记录的「脏条纹」事故。
+-- 所以由调用方用 inner=false 关掉内框，改用下面那套低对比的双线。
+local function drawCardBack(x, y, inner, shade)
   local w, h, r = const.CARD_W, const.CARD_H, const.CARD_R
+  local inset    = const.CARD_BACK_INSET
 
   setColor(const.COLOR_CARD_BACK)
   love.graphics.rectangle("fill", x, y, w, h, r, r)
 
   if inner ~= false then
     setColor(const.COLOR_CARD_BACK_LINE)
-    love.graphics.rectangle("line", x + 7, y + 7, w - 14, h - 14, r - 3, r - 3)
+    love.graphics.rectangle("line",
+      x + inset, y + inset, w - inset * 2, h - inset * 2, r - 3, r - 3)
+    drawSpider(x + w / 2, y + h / 2 + const.CARD_BACK_ICON_DY, const.COLOR_CARD_BACK_ICON)
+  else
+    -- 列里叠压（M18）：每张只露顶部 STEP_DOWN(8px)。靠【两条线】读作「一张纸」：
+    --
+    --   ① 暗轮廓  沿整张牌的外轮廓（SHADE 0.175）—— 露出的 8px 里只看得见顶边，
+    --              但左右各带一个 1/4 圆弧，那就是「这张卡的边」。
+    --   ② 亮切边  落在内框顶边（EDGE 0.31）—— 下一张牌正好压在它下沿，读作「纸的切面」。
+    --
+    -- 【为什么是两条】M16 只在 y+1.5 画一条 0.31 亮线 → 读作「平板上画了条线」；
+    -- 只留暗线 → 读作「缝」但看不出纸的厚度。一暗一亮才成"厚度"。
+    --
+    -- 【为什么轮廓要走整张牌】左右两个 1/4 圆弧是「卡片侧边」的唯一线索，
+    -- 少了它就只剩下几条平行横线。副作用也很好：圆角自动处理线头，
+    -- 不用再手算 y+1.5 处的内缩量（那是老方案里最容易被改坏的数）。
+    --
+    -- ⚠ 对比度必须压住：暗 0.175/底 0.247（ΔL .072）、亮 0.31/0.247（ΔL .063）。
+    --   M16 那次「脏条纹」事故用的是内框原色 0.45（ΔL .20）+ 完整 1px 横线。
+    --   ΔL 在 .07 量级读作「纸的边界」，拉到 .2 就变成条纹。
+    --
+    -- ⚠ 切边必须缩到内框圆角之外（INSET + r - 3 = 12），否则线头会戳进内框的弧里。
+    drawBackOutline(x, y)
+
+    setColor(const.COLOR_CARD_BACK_EDGE)
+    love.graphics.line(
+      x + const.CARD_BACK_RIM_INSET,     y + const.CARD_BACK_RIM_DY,
+      x + w - const.CARD_BACK_RIM_INSET, y + const.CARD_BACK_RIM_DY)
   end
+
+  -- stock 的层间暗缝（M17）：只给 stock 传 shade=true。
+  --
+  -- 列里叠压走的是上面 inner=false 的分支，那里已经画过同一条轮廓线（M18），
+  -- 再叠一遍没有意义。
+  --
+  -- 两个数值是互相咬合的：STOCK_STACK_DX(7) == CARD_BACK_INSET(7)，于是下层牌
+  -- 的内框竖线正好落在露出条带的边界上，只露出自己的 AA 半边（0.345）——
+  -- 正好当"纸的切边"用。DX 再大就会整条内框线露出来（双线框），再小则条带太窄。
+  if shade then
+    drawBackOutline(x, y)
+  end
+
+  setColor(const.COLOR_TEXT)   -- 复位，和本文件其它 draw* 的收尾惯例一致
 end
 
 -- 选中高亮：在整段牌【底下】垫一块浅灰底，四周露出 SELECT_PAD 像素 → 形成一圈亮边
@@ -234,13 +331,13 @@ end
 --   1. 还剩几轮（牌右下角的小数字）
 --   2. 现在能不能补 —— 不能补（有空列 / 牌库已空）时整叠变灰
 --   3. 鼠标悬停时可补描浅边、不可补描暗红（和落点提示同一套颜色语言）
-local function drawStockOutline(color, alpha)
+local function drawStockOutline(color, alpha, extraW)
   local p = const.HINT_PAD
   setColorA(color, alpha)
   love.graphics.setLineWidth(3)
   love.graphics.rectangle("line",
     const.STOCK_X - p, const.STOCK_Y - p,
-    const.STOCK_W + p * 2, const.STOCK_H + p * 2,
+    const.STOCK_W + (extraW or 0) + p * 2, const.STOCK_H + p * 2,
     const.CARD_R + p, const.CARD_R + p)
   love.graphics.setLineWidth(1)
 end
@@ -250,21 +347,23 @@ function M.drawStock(g, ui)
   local canDeal  = game.canDealFromStock(g)
   local hovered  = ui and ui.mouseX and layout.hitTestStock(ui.mouseX, ui.mouseY)
 
-  local shown = math.min(rounds, 5)                      -- 最多叠 5 张
+  local shown = math.min(rounds, const.STOCK_STACK_MAX)  -- 最多叠 5 张
+  local stackW = (shown > 0) and (shown - 1) * const.STOCK_STACK_DX or 0
   for k = 1, shown do
-    drawCardBack(const.STOCK_X + (k - 1) * 4, const.STOCK_Y)
+    -- ⚠ 这里【必须】全部传 inner=nil（= 整张露出，画内框 + 蜘蛛）。
+    -- 别为了省绘制把下层几张改成 inner=false —— 那会在窄缝里画出一排周期性的
+    -- 横线，正是 drawCardBack 注释里记的"脏条纹"事故。
+    drawCardBack(const.STOCK_X + (k - 1) * const.STOCK_STACK_DX, const.STOCK_Y, nil, true)
   end
 
   -- 不能补时「整叠变灰」。
   -- 【坑】不能给每张背面牌单独设 alpha —— 这 5 张是叠着画的，
   -- 半透明会一层层叠加：4 张 alpha 0.42 叠下来等效约 0.93，肉眼几乎看不出变灰。
   -- 正确做法是整叠画完之后，用【背景色】统一盖一层。
-  local dimW = 0
   if rounds > 0 and not canDeal then
-    dimW = const.STOCK_W + (shown - 1) * 4               -- 连侧边错开的 4px 一起盖住
     setColorA(const.COLOR_BG, 0.62)
     love.graphics.rectangle("fill", const.STOCK_X, const.STOCK_Y,
-      dimW, const.STOCK_H, const.CARD_R, const.CARD_R)
+      const.STOCK_W + stackW, const.STOCK_H, const.CARD_R, const.CARD_R)
   end
 
   -- 剩余轮数（0 时牌库已空，空槽本身已经说明了，不再写 0）
@@ -280,9 +379,9 @@ function M.drawStock(g, ui)
 
   if hovered then
     if canDeal then
-      drawStockOutline(const.COLOR_TARGET, const.TARGET_ALPHA)
+      drawStockOutline(const.COLOR_TARGET, const.TARGET_ALPHA, stackW)
     else
-      drawStockOutline(const.COLOR_REJECT, const.REJECT_ALPHA)
+      drawStockOutline(const.COLOR_REJECT, const.REJECT_ALPHA, stackW)
     end
   end
 

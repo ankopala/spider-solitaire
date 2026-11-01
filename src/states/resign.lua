@@ -15,7 +15,7 @@ local const   = require("const")
 local game    = require("src.game")
 local persist = require("src.persist")
 local render  = require("src.render")
-local seed    = require("src.seed")
+local seedbox = require("src.seedbox")
 local text    = require("src.text")
 local ui      = require("src.ui")
 
@@ -31,12 +31,21 @@ function M.new(ctx)
   }
 
   -- ===== 版式 =====
-  local pw, ph = 660, 372
+  -- ⚠ 和 leave.lua 保持一致（M19：372 → 404，多一行种子 + 复制按钮）。
+  -- 两个面板长得几乎一样，尺寸一页高一页矮会显得像 bug。
+  local pw, ph = 660, 404
   local px, py = (const.VW - pw) / 2, (const.VH - ph) / 2 - 6
+
+  s.px, s.py, s.pw, s.ph = px, py, pw, ph
+
+  s.box = seedbox.new{
+    cx = px + pw / 2,
+    y  = py + 120,
+  }
 
   local bw, bh = 540, 62
   local bx     = px + (pw - bw) / 2
-  local by0    = py + 128
+  local by0    = py + 162
   local gap    = 8
 
   -- ⚠ 三个按钮都用具名下标：以后再加一项不会让键盘/测试里的数字全部错位
@@ -87,12 +96,14 @@ function M.new(ctx)
     self.g     = summary and summary.game or nil
     self.focus = 1
     self.t     = 0
+    self.box:reset()
     print("[state] resign")
   end
 
   -- 只用于面板的轻微淡入，别的不做
   function s:update(dt)
     self.t = self.t + dt
+    self.box:update(dt)             -- "Copied" 的倒计时
   end
 
   function s:leave()
@@ -106,6 +117,8 @@ function M.new(ctx)
 
   function s:mousepressed(mx, my, button)
     if button ~= 1 then return end
+    -- 复制按钮先判（它不在 s.buttons 里，所以 1/2/3 与焦点链都不受影响）
+    if self.box:click(mx, my, seedbox.value(self.g), self.ctx) then return end
     for i, b in ipairs(self.buttons) do
       if ui.hit(b, mx, my) then
         self:activate(i)
@@ -126,6 +139,9 @@ function M.new(ctx)
       self:activate(self.idxRestart)
     elseif key == "2" then
       self:activate(self.idxNew)
+    elseif key == "c" then
+      -- 复制种子。和 1/2/3 不冲突：那几个是出口，这个是只读动作。
+      self.box:copy(seedbox.value(self.g), self.ctx)
     elseif key == "3" or key == "escape" then
       -- Esc = 反悔。这个面板是"确认破坏性操作"，默认出口必须是无害的那个。
       self:activate(self.idxCancel)
@@ -144,18 +160,15 @@ function M.new(ctx)
 
     ui.dim(const.HUD_H, 0.82 * k)
 
-    local pw, ph = 660, 372
-    local px, py = (const.VW - pw) / 2, (const.VH - ph) / 2 - 6
+    local px, py, pw, ph = self.px, self.py, self.pw, self.ph
     ui.panel(px, py, pw, ph, k)
 
     ui.center(text.resign_title, "big",   py + 26, const.COLOR_TEXT,     k)
 
-    -- 说明里带上种子：玩家想在放弃前把这局记下来，还有机会（抄走就能重玩）
-    local lede = text.resign_lede
-    if self.g and self.g.seed then
-      lede = string.format(text.resign_lede_seed, seed.format(self.g.seed))
-    end
-    ui.center(lede, "tiny", py + 96, const.COLOR_TEXT_DIM, k)
+    -- 说明只剩"后果"这一句。种子从 M19 起单独一行（方框 + Copy 按钮）：
+    -- 想在放弃前把这局记下来的人，现在点一下按钮就是完整 10 位。
+    ui.center(text.resign_lede, "tiny", py + 94, const.COLOR_TEXT_DIM, k)
+    self.box:draw(seedbox.text(self.g), k, mx, my)
 
     for i, b in ipairs(self.buttons) do
       -- 第 5 个参数 checked 显式传 false：这些是"动作"不是"选项"，
